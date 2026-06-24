@@ -1,20 +1,21 @@
 import tempfile
 import unittest
 import json
-import os
 from pathlib import Path
 from unittest import mock
 
+import clustering
 import image_cluster
+import utils
 
 
 class ImageClusterUtilityTests(unittest.TestCase):
     def test_sanitize_cluster_name(self) -> None:
-        value = image_cluster.sanitize_cluster_name("Sunny Beach & Ocean Views!!!")
+        value = clustering.sanitize_cluster_name("Sunny Beach & Ocean Views!!!")
         self.assertEqual(value, "sunny-beach-ocean-vi")
 
     def test_generate_cluster_names_are_unique(self) -> None:
-        names = image_cluster.generate_cluster_names(
+        names = clustering.generate_cluster_names(
             {
                 0: ["cat on grass", "cat playing"],
                 1: ["cat on grass", "cat sleeping"],
@@ -27,13 +28,13 @@ class ImageClusterUtilityTests(unittest.TestCase):
             root = Path(tmp)
             first = root / "photo.jpg"
             first.write_text("x", encoding="utf-8")
-            new_path = image_cluster.unique_destination(root, "photo.jpg")
+            new_path = clustering.unique_destination(root, "photo.jpg")
             self.assertEqual(new_path.name, "photo_2.jpg")
 
     def test_coerce_embedding(self) -> None:
-        self.assertEqual(image_cluster._coerce_embedding([1, 2.5, 3]), [1.0, 2.5, 3.0])
-        self.assertIsNone(image_cluster._coerce_embedding([]))
-        self.assertIsNone(image_cluster._coerce_embedding([1, "x"]))
+        self.assertEqual(utils._coerce_embedding([1, 2.5, 3]), [1.0, 2.5, 3.0])
+        self.assertIsNone(utils._coerce_embedding([]))
+        self.assertIsNone(utils._coerce_embedding([1, "x"]))
 
     def test_load_existing_image_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -46,14 +47,14 @@ class ImageClusterUtilityTests(unittest.TestCase):
             }
             json_path.write_text(json.dumps(payload), encoding="utf-8")
 
-            cache = image_cluster.load_existing_image_cache(json_path)
+            cache = utils.load_existing_image_cache(json_path)
             self.assertIn("C:/img/a.jpg", cache)
             self.assertIn("C:/img/b.jpg", cache)
 
     def test_write_json_output_includes_cluster_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             json_path = Path(tmp) / "image_data.json"
-            image_cluster.write_json_output(
+            utils.write_json_output(
                 json_path,
                 records=[{"image_path": "C:/img/a.jpg", "cluster_label": 1}],
                 config={"file_action": "copy"},
@@ -68,7 +69,7 @@ class ImageClusterUtilityTests(unittest.TestCase):
     def test_write_text_report_includes_cluster_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report_path = Path(tmp) / "report.txt"
-            image_cluster.write_text_report(
+            utils.write_text_report(
                 report_path,
                 input_dir=Path(tmp),
                 action="copy",
@@ -101,7 +102,7 @@ class ImageClusterUtilityTests(unittest.TestCase):
                 }
             ]
 
-            counts = image_cluster.organize_cluster_files(
+            counts = clustering.organize_cluster_files(
                 records=records,
                 cluster_root=root / "clusters",
                 action="copy",

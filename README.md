@@ -20,7 +20,11 @@ End-to-end image organization pipeline that:
 
 ## Project files
 
-- `image_cluster.py` - Main CLI pipeline.
+- `image_cluster.py` - CLI entrypoint (argument parsing + pipeline orchestration).
+- `captions.py` - Caption generation logic (real and mock).
+- `embeddings.py` - Embedding generation logic (real and mock).
+- `clustering.py` - Clustering, cluster naming, cluster summaries, and cluster file organization.
+- `utils.py` - Discovery, metadata/cache management, and JSON/report helpers.
 - `requirements.txt` - Python dependencies.
 - `tests/test_image_cluster.py` - Small utility smoke tests.
 
