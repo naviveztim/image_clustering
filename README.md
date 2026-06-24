@@ -6,7 +6,7 @@ End-to-end image organization pipeline that:
 2. Generates text captions for each image.
 3. Produces text embeddings from captions.
 4. Clusters images by semantic similarity.
-5. Copies or moves images into cluster folders.
+5. Copies images into cluster folders.
 6. Exports a JSON dataset and plain text report.
 
 ## Features
@@ -16,7 +16,7 @@ End-to-end image organization pipeline that:
 - Hierarchical clustering by default (or KMeans).
 - Cluster folder naming based on top cluster terms (max 20 characters).
 - JSON output includes image path, metadata, caption, embedding, and cluster info.
-- Text report includes cluster counts and file movement/copy summary.
+- Text report includes cluster counts and file copy summary.
 
 ## Project files
 
@@ -37,7 +37,7 @@ python -m pip install -r requirements.txt
 ## Run (real models)
 
 ```bash
-python image_cluster.py --input-dir "path/to/images" --output-dir "output" --file-action copy
+python image_cluster.py --input-dir "path/to/images" --output-dir "output"
 ```
 
 ### Optional arguments
@@ -45,13 +45,29 @@ python image_cluster.py --input-dir "path/to/images" --output-dir "output" --fil
 - `--cluster-method hierarchical|kmeans` (default: `hierarchical`)
 - `--n-clusters 8` (fixed cluster count)
 - `--distance-threshold 0.8` (hierarchical split threshold)
-- `--file-action copy|move` (default: `copy`)
+- `--file-action copy|move` (legacy compatibility; behavior is always copy)
 - `--json-path output/image_data.json`
 - `--report-path output/report.txt`
+- `--prompt-deletion` / `--no-prompt-deletion` (boolean flag; default is `--prompt-deletion`)
+
+`--prompt-deletion` is a boolean parameter using paired flags:
+
+- Use `--prompt-deletion` to require a confirmation prompt before deleting any directory.
+- Use `--no-prompt-deletion` to skip prompts (useful for scheduled/non-interactive runs).
+
+Examples:
+
+```bash
+# Prompt before any directory deletion (default behavior)
+python image_cluster.py --input-dir "path/to/images" --output-dir "output" --prompt-deletion
+
+# Skip deletion prompts
+python image_cluster.py --input-dir "path/to/images" --output-dir "output" --no-prompt-deletion
+```
 
 
 ## Output
 
 - `output/image_data.json`: full structured data with captions, metadata, embeddings, and clusters.
 - `output/report.txt`: plain text report with total cluster count and files per cluster.
-- `output/clusters/<cluster-name>/...`: copied/moved image files.
+- `output/clusters/<cluster-name>/...`: copied image files.

@@ -31,6 +31,12 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Default model paths – change these to point at local directories if needed
+# ---------------------------------------------------------------------------
+DEFAULT_CAPTION_MODEL = "microsoft/Florence-2-base"
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI options for image captioning, embedding, clustering, and export."""
@@ -55,12 +61,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--caption-model",
-        default="microsoft/Florence-2-base",
-        help="Hugging Face image captioning model.",
+        default=DEFAULT_CAPTION_MODEL,
+        help="Hugging Face image captioning model (local path or HF repo id).",
     )
     parser.add_argument(
         "--embedding-model",
-        default="sentence-transformers/all-MiniLM-L6-v2",
+        default=DEFAULT_EMBEDDING_MODEL,
         help="SentenceTransformer model name.",
     )
     parser.add_argument(
@@ -85,12 +91,18 @@ def parse_args() -> argparse.Namespace:
         "--file-action",
         choices=["copy", "move"],
         default="copy",
-        help="Whether clustered files are copied or moved.",
+        help="Deprecated. Accepted for backward compatibility; files are always copied.",
     )
     parser.add_argument(
         "--extensions",
         default=",".join(sorted(SUPPORTED_EXTENSIONS)),
         help="Comma-separated allowed extensions (example: .jpg,.png,.webp).",
+    )
+    parser.add_argument(
+        "--prompt-deletion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prompt before deleting directories (use --no-prompt-deletion to skip prompts).",
     )
     return parser.parse_args()
 
@@ -99,6 +111,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the end-to-end image captioning, embedding, clustering, and export workflow."""
     args = parse_args()
+    if getattr(args, "file_action", "copy") == "move":
+        logger.warning("--file-action move is no longer supported; proceeding with copy behavior.")
     input_dir = Path(args.input_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
     json_path = Path(args.json_path).resolve() if args.json_path else output_dir / "image_data.json"
@@ -115,11 +129,15 @@ def main() -> None:
 
     print(f"Discovered {len(image_paths)} image(s).")
     existing_cache = load_existing_image_cache(json_path)
-    remove_path_if_exists(report_path)
-    remove_path_if_exists(json_path)
+    remove_path_if_exists(report_path, skip_prompt=not args.prompt_deletion)
+    remove_path_if_exists(json_path, skip_prompt=not args.prompt_deletion)
 
     staging_cluster_root = output_dir / f".{cluster_root.name}__staging"
-    remove_path_if_exists(staging_cluster_root)
+    remove_path_if_exists(
+        staging_cluster_root,
+        deletion_reason="Removing previous staging cluster directory from an earlier run.",
+        skip_prompt=not args.prompt_deletion,
+    )
 
     records = build_image_records(image_paths, existing_cache)
 
@@ -184,11 +202,10 @@ def main() -> None:
     _cluster_counts = organize_cluster_files(
         records=records,
         cluster_root=staging_cluster_root,
-        action=args.file_action,
         cluster_names=cluster_names,
     )
 
-    replace_directory(staging_cluster_root, cluster_root)
+    replace_directory(staging_cluster_root, cluster_root, skip_prompt=not args.prompt_deletion)
 
     config = {
         "caption_model": args.caption_model,
@@ -196,13 +213,13 @@ def main() -> None:
         "cluster_method": args.cluster_method,
         "n_clusters": args.n_clusters,
         "distance_threshold": args.distance_threshold,
-        "file_action": args.file_action,
+        "file_action": "copy",
     }
     write_json_output(json_path, records, config, cluster_summaries)
     write_text_report(
         report_path,
         input_dir=input_dir,
-        action=args.file_action,
+        action="copy",
         method=args.cluster_method,
         total_images=len(records),
         cluster_summaries=cluster_summaries,

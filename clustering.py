@@ -136,10 +136,9 @@ def _resolve_record_source_path(record: Dict[str, object]) -> Path | None:
 def organize_cluster_files(
     records: List[Dict[str, object]],
     cluster_root: Path,
-    action: str,
     cluster_names: Dict[int, str],
 ) -> Dict[str, int]:
-    """Copy or move images into the latest cluster folders and record their new locations."""
+    """Copy images into the latest cluster folders and record their new locations."""
     counts: Dict[str, int] = Counter()
     cluster_root.mkdir(parents=True, exist_ok=True)
 
@@ -165,10 +164,7 @@ def organize_cluster_files(
                 continue
 
         if source.resolve() != destination.resolve():
-            if action == "move":
-                shutil.move(str(source), str(destination))
-            else:
-                shutil.copy2(str(source), str(destination))
+            shutil.copy2(str(source), str(destination))
 
         existing_cluster_file = record.get("cluster_file_path")
         if isinstance(existing_cluster_file, str) and existing_cluster_file:

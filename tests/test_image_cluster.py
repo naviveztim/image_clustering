@@ -105,7 +105,6 @@ class ImageClusterUtilityTests(unittest.TestCase):
             counts = clustering.organize_cluster_files(
                 records=records,
                 cluster_root=root / "clusters",
-                action="copy",
                 cluster_names={1: "new-name"},
             )
 
@@ -149,8 +148,8 @@ class ImageClusterUtilityTests(unittest.TestCase):
                 cluster_method="hierarchical",
                 n_clusters=None,
                 distance_threshold=0.65,
-                file_action="copy",
                 extensions=".jpg",
+                prompt_deletion=True,
             )
             try:
                 image_cluster.main()

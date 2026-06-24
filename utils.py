@@ -3,12 +3,55 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, cast
 
 logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
+
+
+def confirm_directory_deletion(path: Path, reason: str, *, skip_prompt: bool = False) -> bool:
+    """Prompt for confirmation before deleting an existing directory."""
+    if skip_prompt:
+        return True
+
+    prompt = (
+        "\nPath deletion requested:\n"
+        f"- Path: {path}\n"
+        f"- Reason: {reason}\n"
+        "Proceed with deletion? [y/N]: "
+    )
+    response = input(prompt).strip().lower()
+    return response in {"y", "yes"}
+
+
+def _rmtree_with_retry(path: Path, max_retries: int = 3) -> None:
+    """Remove a directory tree with retries for Windows file-locking issues."""
+    for attempt in range(max_retries):
+        try:
+            # On Windows, recursively remove read-only files before deletion
+            def handle_remove_readonly(func, path, exc):
+                if os.name == 'nt' and exc[0] == PermissionError:
+                    os.chmod(path, 0o777)
+                    func(path)
+                else:
+                    raise
+            
+            shutil.rmtree(str(path), onerror=handle_remove_readonly)
+            return
+        except OSError as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Attempt {attempt + 1} to delete {path} failed: {e}. Retrying...")
+                time.sleep(0.5)  # Brief delay to allow Windows file handles to close
+            else:
+                raise SystemExit(
+                    f"Failed to delete directory after {max_retries} attempts: {path}\n"
+                    f"Error: {e}\n"
+                    "Check that files are not locked by another process."
+                )
 
 
 def discover_images(input_dir: Path, extensions: Iterable[str]) -> List[Path]:
@@ -41,10 +84,19 @@ def read_image_metadata(image_path: Path) -> Dict[str, object]:
     return metadata
 
 
-def remove_path_if_exists(path: Path) -> None:
+def remove_path_if_exists(
+    path: Path,
+    *,
+    deletion_reason: str = "Clearing previous output before writing new results.",
+    skip_prompt: bool = False,
+) -> None:
     """Remove a file or directory if it already exists."""
+    if not path.exists():
+       return
+    if not confirm_directory_deletion(path, deletion_reason, skip_prompt=skip_prompt):
+        raise SystemExit(f"Path deletion cancelled by user: {path}")
     if path.is_dir():
-        shutil.rmtree(path)
+        _rmtree_with_retry(path)
     elif path.exists():
         path.unlink()
 
@@ -70,6 +122,7 @@ def build_image_records(
 
     records: List[Dict[str, object]] = []
     seen_image_paths: set[str] = set()
+    seen_source_paths: set[str] = set()
 
     for image_path in image_paths:
         record: Dict[str, object] = {
@@ -88,6 +141,7 @@ def build_image_records(
                 record["cluster_file_path"] = cached_cluster_file
         records.append(record)
         seen_image_paths.add(str(image_path))
+        seen_source_paths.add(str(image_path.resolve()))
 
     for cached_image_path, cached_record in existing_cache.items():
         if cached_image_path in seen_image_paths:
@@ -95,6 +149,10 @@ def build_image_records(
 
         source_path = _resolve_record_source_path(cached_record)
         if source_path is None:
+            continue
+
+        resolved_source_path = str(source_path.resolve())
+        if resolved_source_path in seen_source_paths:
             continue
 
         try:
@@ -117,14 +175,21 @@ def build_image_records(
         if isinstance(cached_cluster_file, str) and cached_cluster_file:
             record["cluster_file_path"] = cached_cluster_file
         records.append(record)
+        seen_source_paths.add(resolved_source_path)
 
     return records
 
 
-def replace_directory(staging_dir: Path, target_dir: Path) -> None:
+def replace_directory(staging_dir: Path, target_dir: Path, *, skip_prompt: bool = False) -> None:
     """Replace a target directory with a fully prepared staging directory."""
     if target_dir.exists():
-        shutil.rmtree(target_dir)
+        if not confirm_directory_deletion(
+            target_dir,
+            "Replacing existing cluster output with freshly generated clusters.",
+            skip_prompt=skip_prompt,
+        ):
+            raise SystemExit(f"Directory replacement cancelled by user: {target_dir}")
+        _rmtree_with_retry(target_dir)
     shutil.move(str(staging_dir), str(target_dir))
 
 
@@ -219,7 +284,7 @@ def write_text_report(
         "",
         "Cluster distribution:",
     ]
-    action_past_tense = "moved" if action == "move" else "copied"
+    action_past_tense = "copied"
     if cluster_summaries:
         for summary in sorted(
             cluster_summaries,
