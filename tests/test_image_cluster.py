@@ -1,8 +1,8 @@
 import tempfile
 import unittest
 import json
+import argparse
 from pathlib import Path
-from unittest import mock
 
 import clustering
 import image_cluster
@@ -138,25 +138,24 @@ class ImageClusterUtilityTests(unittest.TestCase):
             old_cluster_dir.mkdir(parents=True)
             (old_cluster_dir / "photo.jpg").write_text("legacy-content", encoding="utf-8")
 
-            with mock.patch.object(
-                image_cluster,
-                "parse_args",
-                return_value=mock.Mock(
-                    input_dir=str(input_dir),
-                    output_dir=str(output_dir),
-                    json_path=None,
-                    report_path=None,
-                    caption_model="mock-caption",
-                    embedding_model="mock-embedding",
-                    cluster_method="hierarchical",
-                    n_clusters=None,
-                    distance_threshold=0.65,
-                    file_action="copy",
-                    extensions=".jpg",
-                    use_mock_models=True,
-                ),
-            ):
+            original_parse_args = image_cluster.parse_args
+            image_cluster.parse_args = lambda: argparse.Namespace(
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                json_path=None,
+                report_path=None,
+                caption_model="test-caption-model",
+                embedding_model="test-embedding-model",
+                cluster_method="hierarchical",
+                n_clusters=None,
+                distance_threshold=0.65,
+                file_action="copy",
+                extensions=".jpg",
+            )
+            try:
                 image_cluster.main()
+            finally:
+                image_cluster.parse_args = original_parse_args
 
             self.assertTrue(old_json.exists())
             self.assertTrue(old_report.exists())

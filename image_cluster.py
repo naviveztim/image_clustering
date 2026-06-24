@@ -9,14 +9,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
-from captions import caption_images_mock, caption_images_real
+from captions import caption_images_real
 from clustering import (
     cluster_embeddings,
     generate_cluster_names,
     organize_cluster_files,
     summarize_clusters,
 )
-from embeddings import generate_embeddings_mock, generate_embeddings_real
+from embeddings import generate_embeddings_real
 from utils import (
     SUPPORTED_EXTENSIONS,
     _coerce_embedding,
@@ -92,11 +92,6 @@ def parse_args() -> argparse.Namespace:
         default=",".join(sorted(SUPPORTED_EXTENSIONS)),
         help="Comma-separated allowed extensions (example: .jpg,.png,.webp).",
     )
-    parser.add_argument(
-        "--use-mock-models",
-        action="store_true",
-        help="Use deterministic mock caption/embedding generators (fast/offline smoke testing).",
-    )
     return parser.parse_args()
 
 
@@ -157,12 +152,8 @@ def main() -> None:
             captions[idx] = f"Image file named {image_path.stem}"
 
     if uncached_paths:
-        if args.use_mock_models:
-            new_captions = caption_images_mock(uncached_paths)
-            new_embeddings = generate_embeddings_mock(new_captions)
-        else:
-            new_captions = caption_images_real(uncached_paths, args.caption_model)
-            new_embeddings = generate_embeddings_real(new_captions, args.embedding_model)
+        new_captions = caption_images_real(uncached_paths, args.caption_model)
+        new_embeddings = generate_embeddings_real(new_captions, args.embedding_model)
 
         for idx, caption, embedding in zip(uncached_indices, new_captions, new_embeddings):
             captions[idx] = caption
@@ -206,7 +197,6 @@ def main() -> None:
         "n_clusters": args.n_clusters,
         "distance_threshold": args.distance_threshold,
         "file_action": args.file_action,
-        "use_mock_models": args.use_mock_models,
     }
     write_json_output(json_path, records, config, cluster_summaries)
     write_text_report(

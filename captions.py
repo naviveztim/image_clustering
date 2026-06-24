@@ -89,13 +89,3 @@ def caption_images_real(image_paths: Sequence[Path], model_name: str) -> List[st
             captions.append(f"Failed image {image_path.stem}")
 
     return captions
-
-
-def caption_images_mock(image_paths: Sequence[Path]) -> List[str]:
-    """Generate deterministic placeholder captions for offline or smoke-test runs."""
-    captions: List[str] = []
-    for image_path in tqdm(image_paths, desc="Generating mock captions"):
-        stem = image_path.stem.replace("_", " ").replace("-", " ")
-        captions.append(f"Mock caption describing {stem}".strip())
-    return captions
-

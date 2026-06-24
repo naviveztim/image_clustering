@@ -21,8 +21,8 @@ End-to-end image organization pipeline that:
 ## Project files
 
 - `image_cluster.py` - CLI entrypoint (argument parsing + pipeline orchestration).
-- `captions.py` - Caption generation logic (real and mock).
-- `embeddings.py` - Embedding generation logic (real and mock).
+- `captions.py` - Caption generation logic.
+- `embeddings.py` - Embedding generation logic.
 - `clustering.py` - Clustering, cluster naming, cluster summaries, and cluster file organization.
 - `utils.py` - Discovery, metadata/cache management, and JSON/report helpers.
 - `requirements.txt` - Python dependencies.
@@ -49,13 +49,6 @@ python image_cluster.py --input-dir "path/to/images" --output-dir "output" --fil
 - `--json-path output/image_data.json`
 - `--report-path output/report.txt`
 
-## Run (offline mock mode for quick validation)
-
-```bash
-python image_cluster.py --input-dir "path/to/images" --output-dir "output" --use-mock-models
-```
-
-Mock mode avoids downloading ML models and is useful for a quick smoke test.
 
 ## Output
 
