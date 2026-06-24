@@ -13,7 +13,7 @@ import logging
 from tqdm import tqdm
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, cast
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--distance-threshold",
         type=float,
-        default=0.5,
+        default=0.65,
         help="Hierarchical clustering threshold (used when --n-clusters is not set).",
     )
     parser.add_argument(
@@ -123,7 +123,6 @@ def caption_images_real(image_paths: Sequence[Path], model_name: str) -> List[st
 
     import numpy as np
     import torch
-    from PIL import Image
     from transformers import AutoModelForCausalLM, AutoProcessor
 
     seed = 42
@@ -344,28 +343,155 @@ def unique_destination(destination_dir: Path, filename: str) -> Path:
         idx += 1
 
 
+def remove_path_if_exists(path: Path) -> None:
+    """Remove a file or directory if it already exists."""
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _resolve_record_source_path(record: Dict[str, object]) -> Path | None:
+    """Resolve the best available source file path for an image record."""
+    for key in ("image_path", "cluster_file_path"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            path = Path(value)
+            if path.exists():
+                return path
+    return None
+
+
+def summarize_clusters(records: Sequence[Dict[str, object]], cluster_names: Dict[int, str]) -> List[Dict[str, object]]:
+    """Build a stable cluster summary containing numeric labels, names, and counts."""
+    counts: Counter[int] = Counter()
+    for record in records:
+        label = record.get("cluster_label")
+        if isinstance(label, int):
+            counts[label] += 1
+
+    summaries: List[Dict[str, object]] = []
+    for label in sorted(counts):
+        summaries.append(
+            {
+                "label": label,
+                "name": cluster_names.get(label, f"cluster-{label}"),
+                "count": counts[label],
+            }
+        )
+    return summaries
+
+
+def build_image_records(
+    image_paths: Sequence[Path],
+    existing_cache: Dict[str, Dict[str, object]],
+) -> List[Dict[str, object]]:
+    """Build a complete record list from current images plus any cached-but-missing records."""
+    records: List[Dict[str, object]] = []
+    seen_image_paths: set[str] = set()
+
+    for image_path in image_paths:
+        record: Dict[str, object] = {
+            "image_path": str(image_path),
+            "metadata": read_image_metadata(image_path),
+        }
+        cached_record = existing_cache.get(str(image_path))
+        if cached_record:
+            if isinstance(cached_record.get("caption"), str):
+                record["caption"] = cached_record["caption"]
+            cached_embedding = _coerce_embedding(cached_record.get("embedding"))
+            if cached_embedding is not None:
+                record["embedding"] = cached_embedding
+            cached_cluster_file = cached_record.get("cluster_file_path")
+            if isinstance(cached_cluster_file, str) and cached_cluster_file:
+                record["cluster_file_path"] = cached_cluster_file
+        records.append(record)
+        seen_image_paths.add(str(image_path))
+
+    for cached_image_path, cached_record in existing_cache.items():
+        if cached_image_path in seen_image_paths:
+            continue
+
+        source_path = _resolve_record_source_path(cached_record)
+        if source_path is None:
+            continue
+
+        try:
+            metadata = read_image_metadata(source_path)
+        except (OSError, ValueError) as exc:
+            logger.warning("Skipping cached image %s because metadata could not be read: %s", source_path, exc)
+            continue
+
+        record = {
+            "image_path": cached_image_path,
+            "metadata": metadata,
+        }
+        cached_caption = cached_record.get("caption")
+        if isinstance(cached_caption, str):
+            record["caption"] = cached_caption
+        cached_embedding = _coerce_embedding(cached_record.get("embedding"))
+        if cached_embedding is not None:
+            record["embedding"] = cached_embedding
+        cached_cluster_file = cached_record.get("cluster_file_path")
+        if isinstance(cached_cluster_file, str) and cached_cluster_file:
+            record["cluster_file_path"] = cached_cluster_file
+        records.append(record)
+
+    return records
+
+
+def replace_directory(staging_dir: Path, target_dir: Path) -> None:
+    """Replace a target directory with a fully prepared staging directory."""
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    shutil.move(str(staging_dir), str(target_dir))
+
+
 def organize_cluster_files(
     records: List[Dict[str, object]],
     cluster_root: Path,
     action: str,
     cluster_names: Dict[int, str],
 ) -> Dict[str, int]:
-    """Copy or move images into cluster folders and record their new locations."""
+    """Copy or move images into the latest cluster folders and record their new locations."""
     counts: Dict[str, int] = Counter()
     cluster_root.mkdir(parents=True, exist_ok=True)
 
     for record in records:
         label = int(cast(int, record["cluster_label"]))
-        source = Path(str(record["image_path"]))
         cluster_name = cluster_names[label]
+
+        source = _resolve_record_source_path(record)
+        if source is None:
+            logger.warning("Skipping file sync for %s because no source file exists.", record.get("image_path"))
+            record["cluster_name"] = cluster_name
+            continue
+
         destination_dir = cluster_root / cluster_name
         destination_dir.mkdir(parents=True, exist_ok=True)
 
-        destination = unique_destination(destination_dir, source.name)
-        if action == "move":
-            shutil.move(str(source), str(destination))
-        else:
-            shutil.copy2(str(source), str(destination))
+        destination = destination_dir / source.name
+        if destination.exists() and destination.resolve() != source.resolve():
+            try:
+                destination.unlink()
+            except OSError as exc:
+                logger.warning("Unable to replace existing destination %s: %s", destination, exc)
+                continue
+
+        if source.resolve() != destination.resolve():
+            if action == "move":
+                shutil.move(str(source), str(destination))
+            else:
+                shutil.copy2(str(source), str(destination))
+
+        existing_cluster_file = record.get("cluster_file_path")
+        if isinstance(existing_cluster_file, str) and existing_cluster_file:
+            previous_path = Path(existing_cluster_file)
+            if previous_path.exists() and previous_path.resolve() not in {source.resolve(), destination.resolve()}:
+                try:
+                    previous_path.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to remove stale cluster file %s: %s", previous_path, exc)
 
         record["cluster_name"] = cluster_name
         record["cluster_file_path"] = str(destination)
@@ -377,21 +503,70 @@ def write_json_output(
     json_path: Path,
     records: Sequence[Dict[str, object]],
     config: Dict[str, object],
-    cluster_counts: Dict[str, int],
+    cluster_summaries: Sequence[Dict[str, object]],
 ) -> None:
     """Write pipeline configuration, summary data, and image records to JSON."""
+    cluster_counts = {
+        str(cast(str, summary["name"])): int(cast(int, summary["count"]))
+        for summary in cluster_summaries
+    }
+    clusters_payload = [
+        {
+            "label": int(cast(int, summary["label"])),
+            "name": str(cast(str, summary["name"])),
+            "count": int(cast(int, summary["count"])),
+        }
+        for summary in cluster_summaries
+    ]
     payload = {
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "config": config,
         "summary": {
             "total_images": len(records),
-            "total_clusters": len(cluster_counts),
+            "total_clusters": len(cluster_summaries),
             "cluster_counts": cluster_counts,
+            "clusters": clusters_payload,
         },
         "images": records,
     }
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _coerce_embedding(value: Any) -> List[float] | None:
+    """Convert cached embedding data into a numeric vector when possible."""
+    if not isinstance(value, list) or not value:
+        return None
+    vector: List[float] = []
+    for item in value:
+        if not isinstance(item, (int, float)):
+            return None
+        vector.append(float(item))
+    return vector
+
+
+def load_existing_image_cache(json_path: Path) -> Dict[str, Dict[str, object]]:
+    """Load prior JSON output and index image entries by absolute image path."""
+    if not json_path.exists():
+        return {}
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to read existing JSON cache from %s: %s", json_path, exc)
+        return {}
+
+    images = payload.get("images") if isinstance(payload, dict) else None
+    if not isinstance(images, list):
+        return {}
+
+    cached: Dict[str, Dict[str, object]] = {}
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        image_path = item.get("image_path")
+        if isinstance(image_path, str) and image_path:
+            cached[image_path] = item
+    return cached
 
 
 def write_text_report(
@@ -401,7 +576,7 @@ def write_text_report(
     action: str,
     method: str,
     total_images: int,
-    cluster_counts: Dict[str, int],
+    cluster_summaries: Sequence[Dict[str, object]],
 ) -> None:
     """Write a plain-text report summarizing the clustering run and file distribution."""
     lines = [
@@ -421,13 +596,22 @@ def write_text_report(
         ),
         "",
         f"Total images processed: {total_images}",
-        f"Total clusters generated: {len(cluster_counts)}",
+        f"Total clusters generated: {len(cluster_summaries)}",
         "",
         "Cluster distribution:",
     ]
-    if cluster_counts:
-        for cluster_name, count in sorted(cluster_counts.items(), key=lambda item: (-item[1], item[0])):
-            lines.append(f"- {cluster_name}: {count} file(s) {action}d")
+    action_past_tense = "moved" if action == "move" else "copied"
+    if cluster_summaries:
+        for summary in sorted(
+            cluster_summaries,
+            key=lambda item: (-int(item["count"]), int(item["label"])),
+        ):
+            label = int(cast(int, summary["label"]))
+            name = str(cast(str, summary["name"]))
+            count = int(cast(int, summary["count"]))
+            lines.append(
+                f"- Cluster {label} ({name}): {count} file(s) {action_past_tense}"
+            )
     else:
         lines.append("- No clusters generated")
 
@@ -450,31 +634,66 @@ def main() -> None:
     extensions = [item.strip() for item in args.extensions.split(",") if item.strip()]
     image_paths = discover_images(input_dir, extensions)
     if not image_paths:
-        raise SystemExit("No images found with the provided extensions.")
+        logger.info("No images found in %s; cached records will be used if available.", input_dir)
 
     print(f"Discovered {len(image_paths)} image(s).")
-    records: List[Dict[str, object]] = []
-    for image_path in tqdm(image_paths, desc="Reading image metadata"):
-        try:
-            records.append(
-                {
-                    "image_path": str(image_path),
-                    "metadata": read_image_metadata(image_path),
-                }
-            )
-        except (OSError, ValueError) as e:
-            logger.warning(f"Failed to read image metadata for {image_path}: {type(e).__name__}: {e}")
+    existing_cache = load_existing_image_cache(json_path)
+    remove_path_if_exists(report_path)
+    remove_path_if_exists(json_path)
 
+    staging_cluster_root = output_dir / f".{cluster_root.name}__staging"
+    remove_path_if_exists(staging_cluster_root)
 
-    if args.use_mock_models:
-        captions = caption_images_mock(image_paths)
-        embeddings = generate_embeddings_mock(captions)
-    else:
-        captions = caption_images_real(image_paths, args.caption_model)
-        embeddings = generate_embeddings_real(captions, args.embedding_model)
+    records = build_image_records(image_paths, existing_cache)
+
+    if not records:
+        raise SystemExit("No readable images were found after metadata extraction.")
+
+    captions: List[str] = [""] * len(records)
+    embeddings: List[List[float] | None] = [None] * len(records)
+    uncached_indices: List[int] = []
+    uncached_paths: List[Path] = []
+    for idx, record in enumerate(records):
+        image_path = Path(str(record["image_path"]))
+        cached_record = existing_cache.get(str(image_path))
+        if not cached_record:
+            uncached_indices.append(idx)
+            uncached_paths.append(image_path)
+            continue
+
+        cached_embedding = _coerce_embedding(cached_record.get("embedding"))
+        if cached_embedding is None:
+            uncached_indices.append(idx)
+            uncached_paths.append(image_path)
+            continue
+
+        embeddings[idx] = cached_embedding
+        cached_caption = cached_record.get("caption")
+        if isinstance(cached_caption, str) and cached_caption.strip():
+            captions[idx] = cached_caption
+        else:
+            captions[idx] = f"Image file named {image_path.stem}"
+
+    if uncached_paths:
+        if args.use_mock_models:
+            new_captions = caption_images_mock(uncached_paths)
+            new_embeddings = generate_embeddings_mock(new_captions)
+        else:
+            new_captions = caption_images_real(uncached_paths, args.caption_model)
+            new_embeddings = generate_embeddings_real(new_captions, args.embedding_model)
+
+        for idx, caption, embedding in zip(uncached_indices, new_captions, new_embeddings):
+            captions[idx] = caption
+            embeddings[idx] = embedding
+
+    final_embeddings: List[List[float]] = []
+    for idx, embedding in enumerate(embeddings):
+        if embedding is None:
+            raise SystemExit(f"Missing embedding for image: {records[idx]['image_path']}")
+        final_embeddings.append(embedding)
 
     labels = cluster_embeddings(
-        embeddings=embeddings,
+        embeddings=final_embeddings,
         method=args.cluster_method,
         n_clusters=args.n_clusters,
         distance_threshold=args.distance_threshold,
@@ -483,17 +702,20 @@ def main() -> None:
     label_to_captions: Dict[int, List[str]] = defaultdict(list)
     for idx, record in enumerate(records):
         record["caption"] = captions[idx]
-        record["embedding"] = embeddings[idx]
+        record["embedding"] = final_embeddings[idx]
         record["cluster_label"] = labels[idx]
         label_to_captions[labels[idx]].append(captions[idx])
 
     cluster_names = generate_cluster_names(label_to_captions)
-    cluster_counts = organize_cluster_files(
+    cluster_summaries = summarize_clusters(records, cluster_names)
+    _cluster_counts = organize_cluster_files(
         records=records,
-        cluster_root=cluster_root,
+        cluster_root=staging_cluster_root,
         action=args.file_action,
         cluster_names=cluster_names,
     )
+
+    replace_directory(staging_cluster_root, cluster_root)
 
     config = {
         "caption_model": args.caption_model,
@@ -504,14 +726,14 @@ def main() -> None:
         "file_action": args.file_action,
         "use_mock_models": args.use_mock_models,
     }
-    write_json_output(json_path, records, config, cluster_counts)
+    write_json_output(json_path, records, config, cluster_summaries)
     write_text_report(
         report_path,
         input_dir=input_dir,
         action=args.file_action,
         method=args.cluster_method,
         total_images=len(records),
-        cluster_counts=cluster_counts,
+        cluster_summaries=cluster_summaries,
     )
 
     print(f"JSON output:   {json_path}")
