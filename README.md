@@ -45,7 +45,6 @@ python image_cluster.py --input-dir "path/to/images" --output-dir "output"
 - `--cluster-method hierarchical|kmeans` (default: `hierarchical`)
 - `--n-clusters 8` (fixed cluster count)
 - `--distance-threshold 0.8` (hierarchical split threshold)
-- `--file-action copy|move` (legacy compatibility; behavior is always copy)
 - `--json-path output/image_data.json`
 - `--report-path output/report.txt`
 - `--prompt-deletion` / `--no-prompt-deletion` (boolean flag; default is `--prompt-deletion`)

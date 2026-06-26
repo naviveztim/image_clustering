@@ -53,13 +53,29 @@ def _rmtree_with_retry(path: Path, max_retries: int = 3) -> None:
                 )
 
 
-def discover_images(input_dir: Path, extensions: Iterable[str]) -> List[Path]:
-    """Recursively collect image files under the input directory for allowed extensions."""
+def discover_images(
+    input_dir: Path,
+    extensions: Iterable[str],
+    *,
+    excluded_dir_names: Iterable[str] | None = None,
+) -> List[Path]:
+    """Recursively collect image files while skipping configured directory names."""
     allowed = {ext.lower().strip() for ext in extensions if ext.strip()}
+    excluded = {
+        name.lower().strip()
+        for name in excluded_dir_names
+        if name and name.strip()
+    }
+
     images: List[Path] = []
-    for path in input_dir.rglob("*"):
-        if path.is_file() and path.suffix.lower() in allowed:
-            images.append(path)
+    for root, dirnames, filenames in os.walk(input_dir):
+        # Prune ignored folders in-place so os.walk does not recurse into them.
+        dirnames[:] = [name for name in dirnames if name.lower() not in excluded]
+        root_path = Path(root)
+        for filename in filenames:
+            path = root_path / filename
+            if path.suffix.lower() in allowed:
+                images.append(path)
     return sorted(images)
 
 

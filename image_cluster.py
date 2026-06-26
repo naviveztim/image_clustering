@@ -18,7 +18,6 @@ from clustering import (
 )
 from embeddings import generate_embeddings_real
 from utils import (
-    SUPPORTED_EXTENSIONS,
     _coerce_embedding,
     build_image_records,
     discover_images,
@@ -31,11 +30,11 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Default model paths – change these to point at local directories if needed
-# ---------------------------------------------------------------------------
 DEFAULT_CAPTION_MODEL = "microsoft/Florence-2-base"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
+CLUSTER_FOLDER_NAME = "clusters"
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,17 +46,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default="output",
-        help="Directory where JSON/report/cluster folders are written.",
+        help="Directory where cluster folders are written.",
     )
     parser.add_argument(
         "--json-path",
         default=None,
-        help="Path for JSON output. Defaults to <output-dir>/image_data.json",
+        help="Path for files in clusters description JSON output. Defaults to <output-dir>/image_data.json",
     )
     parser.add_argument(
         "--report-path",
         default=None,
-        help="Optional path for report output. Defaults to <output-dir>/report.txt",
+        help="Optional path for output report. Defaults to <output-dir>/report.txt",
     )
     parser.add_argument(
         "--caption-model",
@@ -88,12 +87,6 @@ def parse_args() -> argparse.Namespace:
         help="Hierarchical clustering threshold (used when --n-clusters is not set).",
     )
     parser.add_argument(
-        "--file-action",
-        choices=["copy", "move"],
-        default="copy",
-        help="Deprecated. Accepted for backward compatibility; files are always copied.",
-    )
-    parser.add_argument(
         "--extensions",
         default=",".join(sorted(SUPPORTED_EXTENSIONS)),
         help="Comma-separated allowed extensions (example: .jpg,.png,.webp).",
@@ -111,27 +104,31 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the end-to-end image captioning, embedding, clustering, and export workflow."""
     args = parse_args()
-    if getattr(args, "file_action", "copy") == "move":
-        logger.warning("--file-action move is no longer supported; proceeding with copy behavior.")
     input_dir = Path(args.input_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
     json_path = Path(args.json_path).resolve() if args.json_path else output_dir / "image_data.json"
     report_path = Path(args.report_path).resolve() if args.report_path else output_dir / "report.txt"
-    cluster_root = output_dir / "clusters"
+    cluster_root = output_dir / CLUSTER_FOLDER_NAME
 
     if not input_dir.exists() or not input_dir.is_dir():
         raise SystemExit(f"Input directory not found or not a directory: {input_dir}")
 
+    # Discover images to be classified
     extensions = [item.strip() for item in args.extensions.split(",") if item.strip()]
-    image_paths = discover_images(input_dir, extensions)
+    image_paths = discover_images(
+        input_dir,
+        extensions,
+        excluded_dir_names={CLUSTER_FOLDER_NAME},
+    )
     if not image_paths:
         logger.info("No images found in %s; cached records will be used if available.", input_dir)
-
     print(f"Discovered {len(image_paths)} image(s).")
-    existing_cache = load_existing_image_cache(json_path)
-    remove_path_if_exists(report_path, skip_prompt=not args.prompt_deletion)
-    remove_path_if_exists(json_path, skip_prompt=not args.prompt_deletion)
 
+    # Load existing information for already clustered files, if any
+    existing_cache = load_existing_image_cache(json_path)
+
+    # Remove previous output files/directories to avoid stale data.
+    remove_path_if_exists(report_path, skip_prompt=not args.prompt_deletion)
     staging_cluster_root = output_dir / f".{cluster_root.name}__staging"
     remove_path_if_exists(
         staging_cluster_root,
@@ -139,8 +136,8 @@ def main() -> None:
         skip_prompt=not args.prompt_deletion,
     )
 
+    # Build records with images' metadata
     records = build_image_records(image_paths, existing_cache)
-
     if not records:
         raise SystemExit("No readable images were found after metadata extraction.")
 
@@ -177,6 +174,7 @@ def main() -> None:
             captions[idx] = caption
             embeddings[idx] = embedding
 
+    # Create clusters for produced embeddings
     final_embeddings: List[List[float]] = []
     for idx, embedding in enumerate(embeddings):
         if embedding is None:
@@ -190,6 +188,7 @@ def main() -> None:
         distance_threshold=args.distance_threshold,
     )
 
+    # Update images' records with so found labels, captions and embeddings
     label_to_captions: Dict[int, List[str]] = defaultdict(list)
     for idx, record in enumerate(records):
         record["caption"] = captions[idx]
@@ -197,14 +196,15 @@ def main() -> None:
         record["cluster_label"] = labels[idx]
         label_to_captions[labels[idx]].append(captions[idx])
 
+    # Create human-readable cluster names based on majority of words in given caption
     cluster_names = generate_cluster_names(label_to_captions)
     cluster_summaries = summarize_clusters(records, cluster_names)
+    # Copy images into the clustered folders
     _cluster_counts = organize_cluster_files(
         records=records,
         cluster_root=staging_cluster_root,
         cluster_names=cluster_names,
     )
-
     replace_directory(staging_cluster_root, cluster_root, skip_prompt=not args.prompt_deletion)
 
     config = {
