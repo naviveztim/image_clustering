@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, cast
 
 logger = logging.getLogger(__name__)
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
 
 
 def confirm_directory_deletion(path: Path, reason: str, *, skip_prompt: bool = False) -> bool:
