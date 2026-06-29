@@ -97,6 +97,17 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Prompt before deleting directories (use --no-prompt-deletion to skip prompts).",
     )
+    parser.add_argument(
+        "--order-prefix",
+        choices=["none", "date-taken"],
+        default="none",
+        help=(
+            "Controls file ordering and rank-prefix naming inside each cluster folder. "
+            "Choices: 'none' (default, original filenames, no sorting), "
+            "'date-taken' (sort by EXIF date taken, fallback to file modified/creation date, "
+            "and prefix each filename with its rank, e.g. 3_image.png)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -204,6 +215,7 @@ def main() -> None:
         records=records,
         cluster_root=staging_cluster_root,
         cluster_names=cluster_names,
+        order_by_date_with_prefix=(args.order_prefix == "date-taken"),
     )
     replace_directory(staging_cluster_root, cluster_root, skip_prompt=not args.prompt_deletion)
 
@@ -213,6 +225,7 @@ def main() -> None:
         "cluster_method": args.cluster_method,
         "n_clusters": args.n_clusters,
         "distance_threshold": args.distance_threshold,
+        "order_prefix": args.order_prefix,
         "file_action": "copy",
     }
     write_json_output(json_path, records, config, cluster_summaries)

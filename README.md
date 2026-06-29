@@ -26,7 +26,6 @@ End-to-end image organization pipeline that:
 - `clustering.py` - Clustering, cluster naming, cluster summaries, and cluster file organization.
 - `utils.py` - Discovery, metadata/cache management, and JSON/report helpers.
 - `requirements.txt` - Python dependencies.
-- `tests/test_image_cluster.py` - Small utility smoke tests.
 
 ## Install
 
@@ -48,6 +47,7 @@ python image_cluster.py --input-dir "path/to/images" --output-dir "output"
 - `--json-path output/image_data.json`
 - `--report-path output/report.txt`
 - `--prompt-deletion` / `--no-prompt-deletion` (boolean flag; default is `--prompt-deletion`)
+- `--order-prefix none|date-taken` (default: `none`)
 
 `--prompt-deletion` is a boolean parameter using paired flags:
 
@@ -62,6 +62,9 @@ python image_cluster.py --input-dir "path/to/images" --output-dir "output" --pro
 
 # Skip deletion prompts
 python image_cluster.py --input-dir "path/to/images" --output-dir "output" --no-prompt-deletion
+
+# Order files in each cluster by date taken and prefix with rank (1_, 2_, 3_, ...)
+python image_cluster.py --input-dir "path/to/images" --output-dir "output" --order-prefix date-taken
 ```
 
 

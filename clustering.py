@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import shutil
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Sequence, cast
@@ -154,58 +155,109 @@ def _resolve_record_source_path(record: Dict[str, object]) -> Path | None:
     return None
 
 
+def _parse_datetime_for_sort(value: str) -> float | None:
+    """Parse supported datetime strings and return a UTC timestamp for ordering."""
+    try:
+        # EXIF timestamps are typically formatted as YYYY:MM:DD HH:MM:SS.
+        parsed = datetime.strptime(value, "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            return None
+
+
+def _record_sort_key(record: Dict[str, object], source: Path) -> tuple[float, str]:
+    """Build a stable sort key using date-taken first, then modified/creation time."""
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        date_taken = metadata.get("date_taken")
+        if isinstance(date_taken, str) and date_taken.strip():
+            parsed = _parse_datetime_for_sort(date_taken.strip())
+            if parsed is not None:
+                return (parsed, source.name.lower())
+
+        modified_utc = metadata.get("modified_utc")
+        if isinstance(modified_utc, str) and modified_utc.strip():
+            parsed = _parse_datetime_for_sort(modified_utc.strip())
+            if parsed is not None:
+                return (parsed, source.name.lower())
+
+    try:
+        stat = source.stat()
+        return (float(stat.st_ctime), source.name.lower())
+    except OSError:
+        # Fall back to epoch when metadata cannot be read.
+        return (0.0, source.name.lower())
+
+
 def organize_cluster_files(
     records: List[Dict[str, object]],
     cluster_root: Path,
     cluster_names: Dict[int, str],
+    order_by_date_with_prefix: bool = False,
 ) -> Dict[str, int]:
     """Copy images into the latest cluster folders and record their new locations."""
     # Track per-cluster file totals while syncing files.
     counts: Dict[str, int] = Counter()
     cluster_root.mkdir(parents=True, exist_ok=True)
 
+    # Resolve valid sources first so each cluster can be copied in creation-date order.
+    cluster_entries: Dict[str, List[tuple[Dict[str, object], Path, tuple[float, str]]]] = {}
+
     for record in records:
-        # Resolve destination cluster folder from assigned label.
         label = int(cast(int, record["cluster_label"]))
         cluster_name = cluster_names[label]
-
-        # Resolve best available source file; skip records with no existing file.
         source = _resolve_record_source_path(record)
         if source is None:
             logger.warning("Skipping file sync for %s because no source file exists.", record.get("image_path"))
             record["cluster_name"] = cluster_name
             continue
 
-        # Ensure target cluster directory exists before copy.
+        cluster_entries.setdefault(cluster_name, []).append((record, source, _record_sort_key(record, source)))
+
+    for cluster_name, entries in cluster_entries.items():
+        # Optionally enforce date ordering and rank prefixes within each cluster.
+        ordered_entries = (
+            sorted(entries, key=lambda item: item[2])
+            if order_by_date_with_prefix
+            else entries
+        )
         destination_dir = cluster_root / cluster_name
         destination_dir.mkdir(parents=True, exist_ok=True)
 
-        destination = destination_dir / source.name
-        # Replace stale destination files when they point to different sources.
-        if destination.exists() and destination.resolve() != source.resolve():
-            try:
-                destination.unlink()
-            except OSError as exc:
-                logger.warning("Unable to replace existing destination %s: %s", destination, exc)
-                continue
-
-        # Copy only when source and destination are not already the same file.
-        if source.resolve() != destination.resolve():
-            shutil.copy2(str(source), str(destination))
-
-        # Remove stale previous cluster copies to avoid orphaned files.
-        existing_cluster_file = record.get("cluster_file_path")
-        if isinstance(existing_cluster_file, str) and existing_cluster_file:
-            previous_path = Path(existing_cluster_file)
-            if previous_path.exists() and previous_path.resolve() not in {source.resolve(), destination.resolve()}:
+        for rank, (record, source, _sort_key) in enumerate(ordered_entries, start=1):
+            destination_name = f"{rank}_{source.name}" if order_by_date_with_prefix else source.name
+            destination = destination_dir / destination_name
+            # Replace stale destination files when they point to different sources.
+            if destination.exists() and destination.resolve() != source.resolve():
                 try:
-                    previous_path.unlink()
+                    destination.unlink()
                 except OSError as exc:
-                    logger.warning("Unable to remove stale cluster file %s: %s", previous_path, exc)
+                    logger.warning("Unable to replace existing destination %s: %s", destination, exc)
+                    continue
 
-        # Persist latest cluster metadata for downstream reporting/export.
-        record["cluster_name"] = cluster_name
-        record["cluster_file_path"] = str(destination)
-        counts[cluster_name] += 1
+            # Copy only when source and destination are not already the same file.
+            if source.resolve() != destination.resolve():
+                shutil.copy2(str(source), str(destination))
+
+            # Remove stale previous cluster copies to avoid orphaned files.
+            existing_cluster_file = record.get("cluster_file_path")
+            if isinstance(existing_cluster_file, str) and existing_cluster_file:
+                previous_path = Path(existing_cluster_file)
+                if previous_path.exists() and previous_path.resolve() not in {source.resolve(), destination.resolve()}:
+                    try:
+                        previous_path.unlink()
+                    except OSError as exc:
+                        logger.warning("Unable to remove stale cluster file %s: %s", previous_path, exc)
+
+            # Persist latest cluster metadata for downstream reporting/export.
+            record["cluster_name"] = cluster_name
+            record["cluster_file_path"] = str(destination)
+            counts[cluster_name] += 1
     return dict(counts)
 

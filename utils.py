@@ -63,7 +63,7 @@ def discover_images(
     allowed = {ext.lower().strip() for ext in extensions if ext.strip()}
     excluded = {
         name.lower().strip()
-        for name in excluded_dir_names
+        for name in (excluded_dir_names or ())
         if name and name.strip()
     }
 
@@ -85,12 +85,23 @@ def read_image_metadata(image_path: Path) -> Dict[str, object]:
 
     stat = image_path.stat()
     with Image.open(image_path) as img:
+        date_taken: str | None = None
+        exif = img.getexif()
+        if exif:
+            # Prefer EXIF capture timestamps for chronological ordering.
+            raw_date_taken = exif.get(36867) or exif.get(36868) or exif.get(306)
+            if isinstance(raw_date_taken, bytes):
+                raw_date_taken = raw_date_taken.decode("utf-8", errors="ignore")
+            if isinstance(raw_date_taken, str) and raw_date_taken.strip():
+                date_taken = raw_date_taken.strip()
+
         width, height = img.size
         metadata = {
             "filename": image_path.name,
             "suffix": image_path.suffix.lower(),
             "file_size_bytes": stat.st_size,
             "modified_utc": dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(),
+            "date_taken": date_taken,
             "width": width,
             "height": height,
             "mode": img.mode,
